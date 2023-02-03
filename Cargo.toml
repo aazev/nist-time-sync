@@ -1,0 +1,19 @@
+[package]
+name = "nist_time_sync"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+chrono = { version = "0.4.23", features = ["libc"] }
+clap = { version = "4.1.4", features = ["derive", "cargo"] }
+libc = "0.2.139"
+winapi = "0.3.9"
+windows-service = "0.5.0"
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
+opt-level = 3

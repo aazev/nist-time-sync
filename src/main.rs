@@ -123,14 +123,73 @@ fn sync_with_nist_server() -> Result<DateTime<Utc>, String> {
 
 #[cfg(target_os = "windows")]
 fn main() -> windows_service::Result<()> {
-    use std::ffi::OsString;
+    use std::{
+        ffi::OsString,
+        sync::{mpsc, Arc, Condvar, Mutex},
+    };
 
-    use windows_service::{define_windows_service, service_dispatcher};
+    use windows_service::{
+        define_windows_service,
+        service::{
+            ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus,
+            ServiceType,
+        },
+        service_control_handler::{self, ServiceControlHandlerResult},
+        service_dispatcher,
+    };
+
+    const SERVICE_NAME: &str = "NISTTimeSync";
+    const SERVICE_TYPE: ServiceType = ServiceType::OWN_PROCESS;
 
     define_windows_service!(ffi_service_main, my_service_main);
 
+    fn run() -> windows_service::Result<()> {
+        service_dispatcher::start(SERVICE_NAME, ffi_service_main)
+    }
+
     fn my_service_main(_arguments: Vec<OsString>) {
+        if let Err(_e) = run_service() {
+            // Handle error
+        }
+    }
+
+    fn run_service() -> windows_service::Result<()> {
+        let (shutdown_tx, shutdown_rx) = mpsc::channel();
+
+        let event_handler = move |control_event| -> ServiceControlHandlerResult {
+            match control_event {
+                ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
+                ServiceControl::Stop => {
+                    shutdown_tx.send(()).unwrap();
+                    ServiceControlHandlerResult::NoError
+                }
+                _ => ServiceControlHandlerResult::NotImplemented,
+            }
+        };
+
+        let status_handle = service_control_handler::register(SERVICE_NAME, event_handler)?;
+
+        status_handle.set_service_status(ServiceStatus {
+            service_type: SERVICE_TYPE,
+            current_state: ServiceState::Running,
+            controls_accepted: ServiceControlAccept::STOP,
+            exit_code: ServiceExitCode::Win32(0),
+            checkpoint: 0,
+            wait_hint: Duration::default(),
+            process_id: None,
+        })?;
+
         let args = Args::parse();
+
+        let pair = Arc::new((Mutex::new(false), Condvar::new()));
+        let pair2 = pair.clone();
+        let handle = thread::spawn(move || {
+            let &(ref lock, ref cvar) = &*pair2;
+            let mut run = lock.lock().unwrap();
+            while !*run {
+                run = cvar.wait(run).unwrap();
+            }
+        });
         match args.interval {
             1.. => {
                 println!(
@@ -146,10 +205,23 @@ fn main() -> windows_service::Result<()> {
                     match time {
                         Ok(time) => {
                             println!("System time synced with NIST server: {}", time);
+                            // this is blocking windows service from receiving stop command
                             thread::sleep(Duration::from_secs(args.interval * 60));
+                            let &(ref lock, ref cvar) = &*pair;
+                            let mut run = lock.lock().unwrap();
+                            *run = true;
+                            cvar.notify_one();
+                            handle.join().unwrap();
+                            match shutdown_rx.recv_timeout(Duration::from_secs(1)) {
+                                // Break the loop either upon stop or channel disconnect
+                                Ok(_) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                                // Continue work if no events were received within the timeout
+                                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                            };
+                            break;
                         }
                         Err(e) => {
-                            println!("Error syncing system time: {}", e);
+                            println!("Error: {}", e);
                             break;
                         }
                     }
@@ -157,13 +229,23 @@ fn main() -> windows_service::Result<()> {
             }
             _ => {
                 println!("Interval must be higher than 0");
-                return;
             }
         }
+
+        status_handle.set_service_status(ServiceStatus {
+            service_type: SERVICE_TYPE,
+            current_state: ServiceState::Stopped,
+            controls_accepted: ServiceControlAccept::empty(),
+            exit_code: ServiceExitCode::Win32(0),
+            checkpoint: 0,
+            wait_hint: Duration::default(),
+            process_id: None,
+        })?;
+
+        Ok(())
     }
 
-    service_dispatcher::start("NISTTimeSync", ffi_service_main)?;
-    Ok(())
+    run()
 }
 
 #[cfg(not(target_os = "windows"))]

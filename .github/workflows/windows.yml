@@ -16,6 +16,6 @@ jobs:
     steps:
       - uses: actions/checkout@v3
       - name: Build
-        run: cargo build --target c86_64-pc-windows-gnu
+        run: cargo build --target x86_64-pc-windows-gnu
       - name: Run tests
-        run: cargo test --target c86_64-pc-windows-gnu
+        run: cargo test --target x86_64-pc-windows-gnu

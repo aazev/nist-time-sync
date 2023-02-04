@@ -11,12 +11,12 @@ This small application solves that, acting as a windows service, it synchronizes
 
 ### Windows
 
-[ ] - Auto install as windows service
-[x] - Start as a service
-[x] - Sync time
-[ ] - Stop service
+- [ ] - Auto install as windows service
+- [x] - Start as a service
+- [x] - Sync time
+- [ ] - Stop service
 
 ### Linux
 
-[x] - Sync time
-[x] - Loop sync until stop signal
+- [x] - Sync time
+- [x] - Loop sync until stop signal

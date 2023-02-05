@@ -125,7 +125,7 @@ fn sync_with_nist_server() -> Result<DateTime<Utc>, String> {
 fn main() -> windows_service::Result<()> {
     use std::{
         ffi::OsString,
-        sync::{mpsc, Arc, Condvar, Mutex},
+        sync::{mpsc, Arc, Mutex},
     };
 
     use windows_service::{
@@ -167,7 +167,17 @@ fn main() -> windows_service::Result<()> {
             }
         };
 
+        let args = Args::parse();
         let status_handle = service_control_handler::register(SERVICE_NAME, event_handler)?;
+
+        println!(
+            "Syncing system time with NIST server every {} {}",
+            args.interval,
+            match args.interval {
+                1 => "minute",
+                _ => "minutes",
+            }
+        );
 
         status_handle.set_service_status(ServiceStatus {
             service_type: SERVICE_TYPE,
@@ -179,57 +189,39 @@ fn main() -> windows_service::Result<()> {
             process_id: None,
         })?;
 
-        let args = Args::parse();
+        let run = Arc::new(Mutex::new(true));
+        let run_clone = run.clone();
 
-        let pair = Arc::new((Mutex::new(false), Condvar::new()));
-        let pair2 = pair.clone();
         let handle = thread::spawn(move || {
-            let &(ref lock, ref cvar) = &*pair2;
-            let mut run = lock.lock().unwrap();
-            while !*run {
-                run = cvar.wait(run).unwrap();
-            }
-        });
-        match args.interval {
-            1.. => {
-                println!(
-                    "Syncing system time with NIST server every {} {}",
-                    args.interval,
-                    match args.interval {
-                        1 => "minute",
-                        _ => "minutes",
+            let run = run_clone;
+            while *run.lock().unwrap() {
+                let time = sync_with_nist_server();
+                match time {
+                    Ok(time) => {
+                        println!("System time set to {}", time);
+                        thread::sleep(Duration::from_secs(args.interval * 60));
                     }
-                );
-                loop {
-                    let time = sync_with_nist_server();
-                    match time {
-                        Ok(time) => {
-                            println!("System time synced with NIST server: {}", time);
-                            // this is blocking windows service from receiving stop command
-                            thread::sleep(Duration::from_secs(args.interval * 60));
-                            let &(ref lock, ref cvar) = &*pair;
-                            let mut run = lock.lock().unwrap();
-                            *run = true;
-                            cvar.notify_one();
-                            handle.join().unwrap();
-                            match shutdown_rx.recv_timeout(Duration::from_secs(1)) {
-                                // Break the loop either upon stop or channel disconnect
-                                Ok(_) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
-                                // Continue work if no events were received within the timeout
-                                Err(mpsc::RecvTimeoutError::Timeout) => {}
-                            };
-                            break;
-                        }
-                        Err(e) => {
-                            println!("Error: {}", e);
-                            break;
-                        }
+                    Err(e) => {
+                        println!("Error: {}", e);
+                        break;
                     }
                 }
             }
-            _ => {
-                println!("Interval must be higher than 0");
-            }
+        });
+
+        loop {
+            match shutdown_rx.recv_timeout(Duration::from_secs(1)) {
+                // Break the loop either upon stop or channel disconnect
+                Ok(_) | Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    let mut run = run.lock().unwrap();
+                    *run = false;
+                    handle.join().unwrap();
+                    break;
+                }
+
+                // Continue work if no events were received within the timeout
+                Err(mpsc::RecvTimeoutError::Timeout) => (),
+            };
         }
 
         status_handle.set_service_status(ServiceStatus {

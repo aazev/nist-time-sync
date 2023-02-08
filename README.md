@@ -14,7 +14,7 @@ This small application solves that, acting as a windows service, it synchronizes
 - [ ] - Auto install as windows service
 - [x] - Start as a service
 - [x] - Sync time
-- [ ] - Stop service
+- [x] - Stop service
 
 ### Linux
 

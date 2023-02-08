@@ -2,7 +2,7 @@
 use chrono::Local;
 use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc};
 use clap::Parser;
-use std::{io::Read, net::TcpStream, thread, time::Duration};
+use std::{io::Read, net::TcpStream, time::Duration};
 
 const NIST_TIME_SERVER: &str = "time.nist.gov:13";
 
@@ -123,10 +123,7 @@ fn sync_with_nist_server() -> Result<DateTime<Utc>, String> {
 
 #[cfg(target_os = "windows")]
 fn main() -> windows_service::Result<()> {
-    use std::{
-        ffi::OsString,
-        sync::{mpsc, Arc, Mutex},
-    };
+    use std::{ffi::OsString, sync::mpsc};
 
     use windows_service::{
         define_windows_service,
@@ -189,35 +186,28 @@ fn main() -> windows_service::Result<()> {
             process_id: None,
         })?;
 
-        let run = Arc::new(Mutex::new(true));
-        let run_clone = run.clone();
-
-        let handle = thread::spawn(move || {
-            let run = run_clone;
-            while *run.lock().unwrap() {
-                let time = sync_with_nist_server();
-                match time {
-                    Ok(time) => {
-                        println!("System time set to {}", time);
-                        thread::sleep(Duration::from_secs(args.interval * 60));
-                    }
-                    Err(e) => {
-                        println!("Error: {}", e);
-                        break;
+        let mut sleep_until = Utc::now();
+        loop {
+            match Utc::now() >= sleep_until {
+                true => {
+                    let time = sync_with_nist_server();
+                    match time {
+                        Ok(time) => {
+                            println!("System time set to {}", time);
+                            sleep_until =
+                                time + chrono::Duration::minutes((args.interval * 60) as i64);
+                        }
+                        Err(e) => {
+                            println!("Error: {}", e);
+                            break;
+                        }
                     }
                 }
+                false => (),
             }
-        });
-
-        loop {
             match shutdown_rx.recv_timeout(Duration::from_secs(1)) {
                 // Break the loop either upon stop or channel disconnect
-                Ok(_) | Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    let mut run = run.lock().unwrap();
-                    *run = false;
-                    handle.join().unwrap();
-                    break;
-                }
+                Ok(_) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
 
                 // Continue work if no events were received within the timeout
                 Err(mpsc::RecvTimeoutError::Timeout) => (),

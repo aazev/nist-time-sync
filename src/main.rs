@@ -232,6 +232,8 @@ fn main() -> windows_service::Result<()> {
 
 #[cfg(not(target_os = "windows"))]
 fn main() {
+    use std::thread;
+
     let args = Args::parse();
     match args.interval {
         1.. => {

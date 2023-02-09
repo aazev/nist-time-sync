@@ -2,33 +2,20 @@
 use chrono::Local;
 use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc};
 use clap::Parser;
-use std::{io::Read, net::TcpStream, time::Duration};
+use std::{io::Read, net::TcpStream, thread, time::Duration};
 
+const SERVICE_NAME: &str = "NISTTimeSync";
 const NIST_TIME_SERVER: &str = "time.nist.gov:13";
 
 #[derive(Parser)]
+#[command(version, author = "André Azevedo")]
 struct Args {
     #[arg(short = 'i', long = "interval", default_value = "60")]
     interval: u64,
-}
-
-#[cfg(target_os = "linux")]
-fn set_system_time(datetime: DateTime<Local>) -> Result<i32, String> {
-    use libc::{settimeofday, time_t, timeval};
-
-    let timestamp = datetime.timestamp();
-    let tv = timeval {
-        tv_sec: timestamp as time_t,
-        tv_usec: 0,
-    };
-    let tz = std::ptr::null();
-
-    let result = unsafe { settimeofday(&tv as *const timeval, tz) };
-
-    match result {
-        0 => Ok(result),
-        _ => Err("Error setting system time".into()),
-    }
+    #[arg(long = "install")]
+    install: bool,
+    #[arg(long = "uninstall")]
+    uninstall: bool,
 }
 
 #[cfg(target_os = "windows")]
@@ -108,21 +95,123 @@ fn sync_with_nist_server() -> Result<DateTime<Utc>, String> {
     }
 }
 
-#[cfg(not(target_os = "windows"))]
-fn sync_with_nist_server() -> Result<DateTime<Utc>, String> {
-    let time_string = get_nist_server_time().unwrap();
-    let time_tm = parse_nist_response(&time_string);
-    let local: DateTime<Local> = Local.from_utc_datetime(&time_tm.naive_utc());
-    match set_system_time(local) {
-        Ok(_) => Ok(time_tm),
-        Err(_e) => {
-            return Err("Error setting system time, check your permissions.".into());
+#[cfg(target_os = "windows")]
+fn install_service() -> windows_service::Result<()> {
+    use std::ffi::OsString;
+    use windows_service::{
+        service::{
+            ServiceAccess, ServiceDependency, ServiceErrorControl, ServiceInfo, ServiceStartType,
+            ServiceType,
+        },
+        service_manager::{ServiceManager, ServiceManagerAccess},
+    };
+
+    let manager_access = ServiceManagerAccess::CONNECT | ServiceManagerAccess::CREATE_SERVICE;
+    let service_manager = ServiceManager::local_computer(None::<&str>, manager_access);
+
+    match service_manager {
+        Ok(manager) => {
+            let service_binary_path = ::std::env::current_exe().unwrap();
+
+            let service_info = ServiceInfo {
+                name: OsString::from(SERVICE_NAME),
+                display_name: OsString::from("NIST Time Sync Service"),
+                service_type: ServiceType::OWN_PROCESS,
+                start_type: ServiceStartType::AutoStart,
+                error_control: ServiceErrorControl::Normal,
+                executable_path: service_binary_path,
+                launch_arguments: vec![],
+                dependencies: vec![ServiceDependency::Service(OsString::from("LanmanServer"))],
+                account_name: None, // run as System
+                account_password: None,
+            };
+            match manager.create_service(&service_info, ServiceAccess::CHANGE_CONFIG) {
+                Ok(service) => {
+                    service.set_description("Windows service that syncronizes system time with NIST servers, used as a workaround dual booting")?;
+                    start_service()?;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Err(e) => {
+            return Err(e);
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn start_service() -> windows_service::Result<()> {
+    use std::ffi::OsStr;
+
+    use windows_service::{
+        service::{ServiceAccess, ServiceState},
+        service_manager::{ServiceManager, ServiceManagerAccess},
+    };
+
+    let manager_access = ServiceManagerAccess::CONNECT | ServiceManagerAccess::CREATE_SERVICE;
+    let service_manager = ServiceManager::local_computer(None::<&str>, manager_access);
+    match service_manager {
+        Ok(manager) => {
+            let service_access =
+                ServiceAccess::QUERY_STATUS | ServiceAccess::START | ServiceAccess::STOP;
+            let service = manager.open_service(SERVICE_NAME, service_access)?;
+
+            let service_status = service.query_status()?;
+
+            if service_status.current_state != ServiceState::Running {
+                service.start(&Vec::<&OsStr>::new())?;
+                // Wait for service to start
+                thread::sleep(Duration::from_secs(1));
+            }
+        }
+        Err(e) => {
+            return Err(e);
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn uninstall_service() -> windows_service::Result<()> {
+    use windows_service::{
+        service::{ServiceAccess, ServiceState},
+        service_manager::{ServiceManager, ServiceManagerAccess},
+    };
+
+    let manager_access = ServiceManagerAccess::CONNECT | ServiceManagerAccess::CREATE_SERVICE;
+    let service_manager = ServiceManager::local_computer(None::<&str>, manager_access);
+    match service_manager {
+        Ok(manager) => {
+            let service_access =
+                ServiceAccess::QUERY_STATUS | ServiceAccess::STOP | ServiceAccess::DELETE;
+            let service = manager.open_service(SERVICE_NAME, service_access)?;
+
+            let service_status = service.query_status()?;
+
+            if service_status.current_state != ServiceState::Stopped {
+                service.stop()?;
+                // Wait for service to stop
+                thread::sleep(Duration::from_secs(1));
+            }
+
+            match service.delete() {
+                Ok(_) => Ok(()),
+                Err(e) => {
+                    return Err(e);
+                }
+            }
+        }
+        Err(e) => {
+            return Err(e);
         }
     }
 }
 
 #[cfg(target_os = "windows")]
-fn main() -> windows_service::Result<()> {
+fn main_execution() -> windows_service::Result<()> {
     use std::{ffi::OsString, sync::mpsc};
 
     use windows_service::{
@@ -135,7 +224,6 @@ fn main() -> windows_service::Result<()> {
         service_dispatcher,
     };
 
-    const SERVICE_NAME: &str = "NISTTimeSync";
     const SERVICE_TYPE: ServiceType = ServiceType::OWN_PROCESS;
 
     define_windows_service!(ffi_service_main, my_service_main);
@@ -230,10 +318,133 @@ fn main() -> windows_service::Result<()> {
     run()
 }
 
+#[cfg(target_os = "windows")]
+fn main() -> windows_service::Result<()> {
+    use clap::CommandFactory;
+    use winapi::shared::winerror::{
+        ERROR_ACCESS_DENIED, ERROR_FAILED_SERVICE_CONTROLLER_CONNECT, ERROR_SERVICE_DOES_NOT_EXIST,
+        ERROR_SERVICE_EXISTS,
+    };
+
+    let args = Args::parse();
+
+    let mut result: Result<(), windows_service::Error> = Ok(());
+
+    if args.install {
+        result = install_service();
+    }
+    if args.uninstall {
+        result = uninstall_service();
+    }
+
+    if args.install || args.uninstall {
+        match result {
+            Ok(_) => {
+                println!(
+                    "Service {}",
+                    match args.install {
+                        true => "installed",
+                        false => "uninstalled",
+                    }
+                );
+                return Ok(());
+            }
+            Err(e) => {
+                match e {
+                    windows_service::Error::Winapi(e) => match e.raw_os_error() {
+                        Some(code) => match code as u32 {
+                            ERROR_ACCESS_DENIED => {
+                                println!("Access denied. Please run this application as an administrator.");
+                                return Ok(());
+                            }
+                            ERROR_SERVICE_EXISTS => {
+                                println!("Service already installed.");
+                                return Ok(());
+                            }
+                            ERROR_SERVICE_DOES_NOT_EXIST => {
+                                println!("Service not installed.");
+                                return Ok(());
+                            }
+                            _ => {
+                                println!("Error: {}", e);
+                                return Ok(());
+                            }
+                        },
+                        _ => {
+                            println!("Error: {}", e);
+                            return Ok(());
+                        }
+                    },
+                    _ => {
+                        println!("Error: {}", e);
+                        return Ok(());
+                    }
+                }
+            }
+        }
+    }
+    match main_execution() {
+        Ok(_) => Ok(()),
+        Err(e) => match e {
+            windows_service::Error::Winapi(e) => match e.raw_os_error() {
+                Some(code) => match code as u32 {
+                    ERROR_FAILED_SERVICE_CONTROLLER_CONNECT => {
+                        println!("This application is not running as a service. Please install it as a service first.");
+                        Args::command().print_help().unwrap();
+                        Ok(())
+                    }
+                    _ => {
+                        println!("Error: {}", e);
+                        Ok(())
+                    }
+                },
+                _ => {
+                    println!("Error: {}", e);
+                    Ok(())
+                }
+            },
+            _ => {
+                println!("Error: {}", e);
+                Ok(())
+            }
+        },
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn sync_with_nist_server() -> Result<DateTime<Utc>, String> {
+    let time_string = get_nist_server_time().unwrap();
+    let time_tm = parse_nist_response(&time_string);
+    let local: DateTime<Local> = Local.from_utc_datetime(&time_tm.naive_utc());
+    match set_system_time(local) {
+        Ok(_) => Ok(time_tm),
+        Err(_e) => {
+            return Err("Error setting system time, check your permissions.".into());
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn set_system_time(datetime: DateTime<Local>) -> Result<i32, String> {
+    use libc::{settimeofday, time_t, timeval};
+
+    let timestamp = datetime.timestamp();
+    let tv = timeval {
+        tv_sec: timestamp as time_t,
+        tv_usec: 0,
+    };
+    let tz = std::ptr::null();
+
+    let result = unsafe { settimeofday(&tv as *const timeval, tz) };
+
+    match result {
+        0 => Ok(result),
+        _ => Err("Error setting system time".into()),
+    }
+}
+
 #[cfg(not(target_os = "windows"))]
 fn main() {
-    use std::thread;
-
     let args = Args::parse();
     match args.interval {
         1.. => {

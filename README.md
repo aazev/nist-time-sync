@@ -11,7 +11,8 @@ This small application solves that, acting as a windows service, it synchronizes
 
 ### Windows
 
-- [ ] - Auto install as windows service
+- [x] - Auto install as windows service
+    - [x] - Auto start when installed
 - [x] - Start as a service
 - [x] - Sync time
 - [x] - Stop service

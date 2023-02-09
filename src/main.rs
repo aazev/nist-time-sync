@@ -4,6 +4,7 @@ use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc};
 use clap::Parser;
 use std::{io::Read, net::TcpStream, thread, time::Duration};
 
+#[cfg(target_os = "windows")]
 const SERVICE_NAME: &str = "NISTTimeSync";
 const NIST_TIME_SERVER: &str = "time.nist.gov:13";
 

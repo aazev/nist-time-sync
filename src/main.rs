@@ -122,7 +122,11 @@ fn install_service() -> windows_service::Result<()> {
                 error_control: ServiceErrorControl::Normal,
                 executable_path: service_binary_path,
                 launch_arguments: vec![],
-                dependencies: vec![ServiceDependency::Service(OsString::from("LanmanServer"))],
+                dependencies: vec![
+                    ServiceDependency::Service(OsString::from("Tcpip")),
+                    ServiceDependency::Service(OsString::from("Dhcp")),
+                    ServiceDependency::Service(OsString::from("Dnscache")),
+                ],
                 account_name: None, // run as System
                 account_password: None,
             };

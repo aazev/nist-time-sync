@@ -73,15 +73,13 @@ fn parse_nist_response(response: &str) -> DateTime<Utc> {
         NaiveTime::from_hms_opt(hour, minute, second).unwrap(),
     );
     let datetime = parse_datetime(naive);
-    let datetime = datetime + chrono::Duration::milliseconds(milisseconds as i64);
-    datetime
+    datetime + chrono::Duration::milliseconds(milisseconds as i64)
 }
 
 fn parse_datetime(naive: NaiveDateTime) -> DateTime<Utc> {
     let naive_date = naive.date();
     let naive_time = naive.time();
-    let datetime = Utc.from_utc_datetime(&NaiveDateTime::new(naive_date, naive_time));
-    datetime
+    Utc.from_utc_datetime(&NaiveDateTime::new(naive_date, naive_time))
 }
 
 #[cfg(target_os = "windows")]
@@ -91,7 +89,7 @@ fn sync_with_nist_server() -> Result<DateTime<Utc>, String> {
     match set_system_time(time_tm) {
         Ok(_) => Ok(time_tm),
         Err(_e) => {
-            return Err("Error setting system time, check your permissions.".into());
+            Err("Error setting system time, check your permissions.".into())
         }
     }
 }
@@ -205,12 +203,12 @@ fn uninstall_service() -> windows_service::Result<()> {
             match service.delete() {
                 Ok(_) => Ok(()),
                 Err(e) => {
-                    return Err(e);
+                    Err(e)
                 }
             }
         }
         Err(e) => {
-            return Err(e);
+            Err(e)
         }
     }
 }
